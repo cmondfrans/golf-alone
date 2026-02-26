@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 
 // ─── PALETTE: Morning Dew ─────────────────────────────────────────────────────
 const C = {
@@ -20,28 +20,18 @@ const C = {
   scoreBad:    "#9e6060",
 };
 
-// ─── MOCK DATA ────────────────────────────────────────────────────────────────
-const MOCK_COURSES = [
-  { id:1, name:"Pebble Creek Municipal", type:"municipal",    difficulty:6.2, price:38,  walkable:true,  lat:38.79, lng:-121.23, city:"Rocklin"    },
-  { id:2, name:"Sierra Pines Golf Club", type:"public",       difficulty:7.8, price:89,  walkable:false, lat:38.75, lng:-121.28, city:"Roseville"  },
-  { id:3, name:"Granite Bay Greens",     type:"public",       difficulty:8.4, price:115, walkable:true,  lat:38.77, lng:-121.18, city:"Granite Bay" },
-  { id:4, name:"Lincoln Hills Golf",     type:"municipal",    difficulty:5.9, price:45,  walkable:true,  lat:38.89, lng:-121.30, city:"Lincoln"    },
-  { id:5, name:"Woodcreek Oaks",         type:"public",       difficulty:7.1, price:72,  walkable:false, lat:38.72, lng:-121.20, city:"Roseville"  },
-  { id:6, name:"Coyote Ridge CC",        type:"semi-private", difficulty:8.9, price:145, walkable:false, lat:38.80, lng:-121.15, city:"Rocklin"    },
-  { id:7, name:"Foothill Ranch GC",      type:"public",       difficulty:6.7, price:55,  walkable:true,  lat:38.85, lng:-121.10, city:"Auburn"     },
-  { id:8, name:"Diamond Oaks Golf",      type:"municipal",    difficulty:5.5, price:32,  walkable:true,  lat:38.70, lng:-121.32, city:"Roseville"  },
-];
-
-const ZIP_TO_COORDS = {
-  "95765":[38.79,-121.23],"95747":[38.77,-121.28],"95746":[38.77,-121.18],
-  "95648":[38.89,-121.30],"95678":[38.72,-121.22],"95661":[38.75,-121.25],
-};
-function zipToCoords(zip) { return ZIP_TO_COORDS[zip]||[38.79,-121.23]; }
-
 function getDistanceMiles(la1,lo1,la2,lo2) {
   const R=3958.8,dL=((la2-la1)*Math.PI)/180,dO=((lo2-lo1)*Math.PI)/180;
   const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dO/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+async function zipToCoords(zip) {
+  const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
+  if (!res.ok) throw new Error("Invalid zip code");
+  const data = await res.json();
+  const place = data.places[0];
+  return [parseFloat(place.latitude), parseFloat(place.longitude)];
 }
 
 function generateTeeTimes(courseId, requestedTime) {
@@ -96,7 +86,6 @@ function scoreLabel(sc) {
   return "Low";
 }
 
-// ─── SCORE BADGE ─────────────────────────────────────────────────────────────
 function ScoreBadge({score,size=52}) {
   const col=scoreColor(score), inner=size*0.76;
   return (
@@ -120,7 +109,6 @@ function ScoreBadge({score,size=52}) {
   );
 }
 
-// ─── TEE TIME ROW ─────────────────────────────────────────────────────────────
 function TeeTimeRow({tt,score}) {
   const col=scoreColor(score);
   return (
@@ -160,7 +148,6 @@ function TeeTimeRow({tt,score}) {
   );
 }
 
-// ─── COURSE CARD ─────────────────────────────────────────────────────────────
 function CourseCard({course,teeTimes,date,hoursUntil}) {
   const [open,setOpen]=useState(false);
   const scored=teeTimes
@@ -223,15 +210,28 @@ function CourseCard({course,teeTimes,date,hoursUntil}) {
       {open && (
         <div style={{padding:"14px 18px",background:C.bg}}>
           {scored.map((t,i)=><TeeTimeRow key={i} tt={t} score={t.score}/>)}
+          <a
+            href={`https://www.golfnow.com/tee-times#sortby=Date&view=list&searchType=GPS&latitude=${course.lat}&longitude=${course.lng}&holes=18`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display:"block",textAlign:"center",marginTop:10,padding:"9px 16px",
+              background:C.accentDim,border:`1px solid ${C.accentBorder}`,
+              borderRadius:8,color:C.accent,fontFamily:"monospace",fontSize:11,
+              textDecoration:"none",letterSpacing:"0.08em",
+            }}
+            onClick={e=>e.stopPropagation()}
+          >
+            Check live availability on GolfNow →
+          </a>
         </div>
       )}
     </div>
   );
 }
 
-// ─── MAIN ────────────────────────────────────────────────────────────────────
 export default function GolfAlone() {
-  const [zip,     setZip]      = useState("95765");
+  const [zip,     setZip]      = useState("");
   const [teeTime, setTeeTime]  = useState("08:00");
   const [date,    setDate]     = useState(()=>{
     const d=new Date(); d.setDate(d.getDate()+1); return d.toISOString().split("T")[0];
@@ -242,22 +242,45 @@ export default function GolfAlone() {
   const [sortBy,    setSortBy]    = useState("score");
   const [filterMin, setFilterMin] = useState(1);
   const [searched,  setSearched]  = useState(false);
+  const [error,     setError]     = useState(null);
 
-  function handleSearch(e) {
+  async function handleSearch(e) {
     e.preventDefault();
-    setLoading(true); setSearched(true);
-    setTimeout(()=>{
-      const [lat,lng]=zipToCoords(zip);
+    setLoading(true); setSearched(true); setError(null);
+    try {
+      const [lat,lng] = await zipToCoords(zip);
       const now=new Date(), tdt=new Date(date+"T"+teeTime+":00"), hrs=(tdt-now)/36e5;
-      const courses=MOCK_COURSES
-        .map(c=>({...c,distance:getDistanceMiles(lat,lng,c.lat,c.lng)}))
-        .filter(c=>c.distance<=radius)
-        .map(c=>({...c,teeTimes:generateTeeTimes(c.id,teeTime),hoursUntil:hrs}))
-        .filter(c=>c.teeTimes.length>0)
-        .map(c=>({...c,bestScore:Math.max(...c.teeTimes.map(t=>scoreTeeTime(c,t,date,hrs)))}));
+
+      const res = await fetch(`/api/courses?lat=${lat}&lng=${lng}&radius=${radius}`);
+      const data = await res.json();
+
+      const courses = (data.courses || []).map((c,i) => {
+        const clat = parseFloat(c.latitude||c.lat||0);
+        const clng = parseFloat(c.longitude||c.lng||0);
+        return {
+          id: c.id || i,
+          name: c.club_name || c.name || "Unknown Course",
+          type: c.ownership_type || c.facility_type || "public",
+          difficulty: parseFloat(c.course_rating || c.difficulty || 7.0),
+          price: parseInt(c.green_fee_weekday || c.price || 60),
+          walkable: c.walking_allowed ?? true,
+          lat: clat,
+          lng: clng,
+          city: c.city || "",
+          distance: getDistanceMiles(lat,lng,clat,clng),
+          teeTimes: generateTeeTimes(c.id||i, teeTime),
+          hoursUntil: hrs,
+        };
+      })
+      .filter(c=>c.teeTimes.length>0)
+      .map(c=>({...c,bestScore:Math.max(...c.teeTimes.map(t=>scoreTeeTime(c,t,date,hrs)))}));
+
       setResults(courses);
-      setLoading(false);
-    },1200);
+    } catch(err) {
+      setError(err.message || "Something went wrong. Check your zip code and try again.");
+      setResults([]);
+    }
+    setLoading(false);
   }
 
   const sorted=(results||[])
@@ -300,11 +323,8 @@ export default function GolfAlone() {
         button{transition:all 0.15s;}
       `}</style>
 
-      {/* Background glows */}
       <div style={{position:"fixed",top:-150,left:-150,width:500,height:500,borderRadius:"50%",background:`radial-gradient(circle, ${C.accentGlow} 0%, transparent 70%)`,pointerEvents:"none",zIndex:0}}/>
       <div style={{position:"fixed",bottom:-100,right:-100,width:420,height:420,borderRadius:"50%",background:"radial-gradient(circle, rgba(93,191,138,0.05) 0%, transparent 70%)",pointerEvents:"none",zIndex:0}}/>
-
-      {/* Floating ball deco */}
       <div style={{position:"fixed",right:-55,top:170,width:210,height:210,borderRadius:"50%",background:`radial-gradient(circle at 35% 35%, ${C.surfaceHigh}, ${C.bg})`,border:`1px solid ${C.border}`,opacity:0.22,animation:"float 7s ease-in-out infinite",pointerEvents:"none",zIndex:0}}>
         {Array.from({length:20},(_,i)=>(
           <div key={i} style={{position:"absolute",width:11,height:11,borderRadius:"50%",background:"rgba(0,0,0,0.25)",left:`${12+(i%4)*22}%`,top:`${12+Math.floor(i/4)*22}%`}}/>
@@ -313,7 +333,6 @@ export default function GolfAlone() {
 
       <div style={{position:"relative",zIndex:1,maxWidth:780,margin:"0 auto",padding:"36px 16px"}}>
 
-        {/* Header */}
         <div style={{textAlign:"center",marginBottom:44}}>
           <div style={{display:"inline-flex",alignItems:"center",gap:12,marginBottom:10}}>
             <span style={{fontSize:26}}>⛳</span>
@@ -330,7 +349,6 @@ export default function GolfAlone() {
           </p>
         </div>
 
-        {/* Search Form */}
         <form onSubmit={handleSearch} style={{
           background:C.surface,border:`1px solid ${C.border}`,borderRadius:16,
           padding:"26px 24px",marginBottom:28,
@@ -339,7 +357,7 @@ export default function GolfAlone() {
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(150px,1fr))",gap:16,marginBottom:18}}>
             <div>
               <label style={labelStyle}>Zip Code</label>
-              <input value={zip} onChange={e=>setZip(e.target.value)} placeholder="95765" maxLength={5} required style={inputStyle}/>
+              <input value={zip} onChange={e=>setZip(e.target.value)} placeholder="e.g. 90210" maxLength={5} required style={inputStyle}/>
             </div>
             <div>
               <label style={labelStyle}>Date</label>
@@ -377,10 +395,14 @@ export default function GolfAlone() {
           </button>
         </form>
 
-        {/* Results */}
-        {searched && !loading && results!==null && (
+        {error && (
+          <div style={{background:"rgba(158,96,96,0.15)",border:"1px solid rgba(158,96,96,0.4)",borderRadius:10,padding:"14px 18px",marginBottom:20,color:"#e09090",fontFamily:"monospace",fontSize:12}}>
+            ⚠️ {error}
+          </div>
+        )}
+
+        {searched && !loading && results!==null && !error && (
           <div style={{animation:"fadeUp 0.4s ease"}}>
-            {/* Stats bar */}
             <div style={{
               display:"flex",alignItems:"center",justifyContent:"space-between",
               flexWrap:"wrap",gap:12,marginBottom:18,
@@ -407,7 +429,6 @@ export default function GolfAlone() {
               </div>
             </div>
 
-            {/* Min score filter */}
             <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:18}}>
               <span style={{color:C.textDim,fontSize:10,fontFamily:"monospace",whiteSpace:"nowrap"}}>Min score: {filterMin}</span>
               <input type="range" min={1} max={9} step={1} value={filterMin}
@@ -426,7 +447,6 @@ export default function GolfAlone() {
               </div>
             </div>
 
-            {/* Legend */}
             <div style={{display:"flex",gap:14,marginBottom:18,flexWrap:"wrap"}}>
               {[{c:C.scoreHigh,l:"8–10 Excellent"},{c:C.scoreMid,l:"6–7 Good"},{c:C.scoreLow,l:"4–5 Fair"},{c:C.scoreBad,l:"1–3 Low"}].map(({c,l})=>(
                 <div key={l} style={{display:"flex",alignItems:"center",gap:5}}>
@@ -451,7 +471,6 @@ export default function GolfAlone() {
           </div>
         )}
 
-        {/* How it works pre-search */}
         {!searched && (
           <div style={{
             background:C.surface,border:`1px solid ${C.border}`,
@@ -463,12 +482,12 @@ export default function GolfAlone() {
             </h2>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(200px,1fr))",gap:18}}>
               {[
-                {icon:"🌅",title:"Time of Day",   desc:"Early morning & twilight add +1–2 pts. Prime time (10am–2pm) subtracts 2."},
-                {icon:"📅",title:"Day of Week",   desc:"Tue–Thu get +1. Weekends lose 2. Off-peak months (Nov–Feb) add 1."},
+                {icon:"🌅",title:"Time of Day",desc:"Early morning & twilight add +1–2 pts. Prime time (10am–2pm) subtracts 2."},
+                {icon:"📅",title:"Day of Week",desc:"Tue–Thu get +1. Weekends lose 2. Off-peak months (Nov–Feb) add 1."},
                 {icon:"🎯",title:"Slot Availability",desc:"Empty foursomes score higher. Single-player-available times score highest."},
-                {icon:"⏱", title:"Booking Window",desc:"Last-minute openings within 24h score +1 — signals low demand."},
-                {icon:"🏌️",title:"Course Type",   desc:"Municipal, harder, pricier, and walkable courses tend to be less crowded."},
-                {icon:"📊",title:"Final Score",   desc:"1–10 scale. 8+ means high probability of playing alone. All factors combined."},
+                {icon:"⏱",title:"Booking Window",desc:"Last-minute openings within 24h score +1 — signals low demand."},
+                {icon:"🏌️",title:"Course Type",desc:"Municipal, harder, pricier, and walkable courses tend to be less crowded."},
+                {icon:"📊",title:"Final Score",desc:"1–10 scale. 8+ means high probability of playing alone. All factors combined."},
               ].map(({icon,title,desc})=>(
                 <div key={title} style={{display:"flex",gap:12,alignItems:"flex-start"}}>
                   <span style={{fontSize:22,flexShrink:0}}>{icon}</span>
@@ -483,7 +502,7 @@ export default function GolfAlone() {
         )}
 
         <div style={{textAlign:"center",marginTop:48,color:C.textDim,fontFamily:"monospace",fontSize:10,letterSpacing:"0.1em"}}>
-          GOLF ALONE · Maximize solo round probability · Demo with simulated data
+          GOLF ALONE · Maximize solo round probability · Courses powered by GolfCourseAPI
         </div>
       </div>
     </div>
