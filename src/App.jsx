@@ -1,6 +1,5 @@
 import { useState } from "react";
 
-// ─── PALETTE: Morning Dew ─────────────────────────────────────────────────────
 const C = {
   bg:          "#252d2e",
   surface:     "#2e393b",
@@ -20,29 +19,32 @@ const C = {
   scoreBad:    "#9e6060",
 };
 
+async function zipToCity(zip) {
+  const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
+  if (!res.ok) throw new Error("Invalid zip code — please check and try again.");
+  const data = await res.json();
+  return {
+    city: data.places[0]["place name"],
+    lat: parseFloat(data.places[0].latitude),
+    lng: parseFloat(data.places[0].longitude),
+  };
+}
+
 function getDistanceMiles(la1,lo1,la2,lo2) {
   const R=3958.8,dL=((la2-la1)*Math.PI)/180,dO=((lo2-lo1)*Math.PI)/180;
   const a=Math.sin(dL/2)**2+Math.cos(la1*Math.PI/180)*Math.cos(la2*Math.PI/180)*Math.sin(dO/2)**2;
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 
-async function zipToCoords(zip) {
-  const res = await fetch(`https://api.zippopotam.us/us/${zip}`);
-  if (!res.ok) throw new Error("Invalid zip code");
-  const data = await res.json();
-  const place = data.places[0];
-  return [parseFloat(place.latitude), parseFloat(place.longitude)];
-}
-
 function generateTeeTimes(courseId, requestedTime) {
   const [rH,rM]=requestedTime.split(":").map(Number);
-  const times=[],seed0=courseId*7;
+  const times=[],seed0=(courseId%1000)*7;
   for (let d=-60;d<=60;d+=10) {
     const tot=rH*60+rM+d;
     if (tot<0||tot>=22*60) continue;
     const h=Math.floor(tot/60),m=tot%60;
     const label=`${String(h).padStart(2,"0")}:${String(m).padStart(2,"0")}`;
-    const s=(courseId*13+d*3+seed0)%100;
+    const s=((courseId%1000)*13+d*3+seed0)%100;
     const open=s<20?4:s<45?3:s<70?2:s<88?1:0;
     if (open>0) times.push({time:label,openSlots:open,filledSlots:4-open,totalSlots:4,singleAvailable:open===4});
   }
@@ -180,17 +182,11 @@ function CourseCard({course,teeTimes,date,hoursUntil}) {
             <h3 style={{margin:0,color:C.text,fontFamily:"'Playfair Display',serif",fontSize:17,fontWeight:700}}>
               {course.name}
             </h3>
-            <span style={{
-              background:"rgba(255,255,255,0.05)",color:C.textMuted,
-              fontSize:9,padding:"2px 8px",borderRadius:99,fontFamily:"monospace",
-              textTransform:"uppercase",letterSpacing:"0.1em",
-            }}>{course.type}</span>
           </div>
           <div style={{color:C.textDim,fontSize:11,fontFamily:"monospace",display:"flex",gap:14,flexWrap:"wrap"}}>
-            <span>📍 {course.city} · {course.distance?.toFixed(1)} mi</span>
-            <span>⛳ Diff {course.difficulty}</span>
-            <span>💵 ${course.price}</span>
-            <span>{course.walkable?"🚶 Walk":"🚗 Cart"}</span>
+            <span>📍 {course.city}</span>
+            {course.difficulty>0 && <span>⛳ Rating {course.difficulty}</span>}
+            <span>🕳 {course.holes} holes</span>
           </div>
         </div>
         <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:3}}>
@@ -211,7 +207,7 @@ function CourseCard({course,teeTimes,date,hoursUntil}) {
         <div style={{padding:"14px 18px",background:C.bg}}>
           {scored.map((t,i)=><TeeTimeRow key={i} tt={t} score={t.score}/>)}
           <a
-            href={`https://www.golfnow.com/tee-times#sortby=Date&view=list&searchType=GPS&latitude=${course.lat}&longitude=${course.lng}&holes=18`}
+            href={`https://www.golfnow.com/tee-times#sortby=Date&view=list&searchType=Text&searchText=${encodeURIComponent(course.name)}`}
             target="_blank"
             rel="noopener noreferrer"
             style={{
@@ -236,39 +232,41 @@ export default function GolfAlone() {
   const [date,    setDate]     = useState(()=>{
     const d=new Date(); d.setDate(d.getDate()+1); return d.toISOString().split("T")[0];
   });
-  const [radius,    setRadius]    = useState(25);
   const [results,   setResults]   = useState(null);
   const [loading,   setLoading]   = useState(false);
   const [sortBy,    setSortBy]    = useState("score");
   const [filterMin, setFilterMin] = useState(1);
   const [searched,  setSearched]  = useState(false);
   const [error,     setError]     = useState(null);
+  const [cityName,  setCityName]  = useState("");
 
   async function handleSearch(e) {
     e.preventDefault();
     setLoading(true); setSearched(true); setError(null);
     try {
-      const [lat,lng] = await zipToCoords(zip);
+      const { city, lat, lng } = await zipToCity(zip);
+      setCityName(city);
       const now=new Date(), tdt=new Date(date+"T"+teeTime+":00"), hrs=(tdt-now)/36e5;
 
-      const res = await fetch(`/api/courses?lat=${lat}&lng=${lng}&radius=${radius}`);
+      const res = await fetch(`/api/courses?city=${encodeURIComponent(city)}`);
       const data = await res.json();
 
-      const courses = (data.courses || []).map((c,i) => {
-        const clat = parseFloat(c.latitude||c.lat||0);
-        const clng = parseFloat(c.longitude||c.lng||0);
+      const courses = (data.courses || []).map((c) => {
+        const clat = parseFloat(c.location?.latitude || lat);
+        const clng = parseFloat(c.location?.longitude || lng);
+        const rating = parseFloat(c.tees?.[0]?.course_rating || 0);
         return {
-          id: c.id || i,
-          name: c.club_name || c.name || "Unknown Course",
-          type: c.ownership_type || c.facility_type || "public",
-          difficulty: parseFloat(c.course_rating || c.difficulty || 7.0),
-          price: parseInt(c.green_fee_weekday || c.price || 60),
-          walkable: c.walking_allowed ?? true,
+          id: c.id,
+          name: c.club_name,
+          city: c.location?.city || city,
+          difficulty: rating,
+          holes: c.tees?.[0]?.number_of_holes || 18,
+          price: rating > 75 ? 120 : rating > 70 ? 75 : 50,
+          walkable: true,
+          type: "public",
           lat: clat,
           lng: clng,
-          city: c.city || "",
-          distance: getDistanceMiles(lat,lng,clat,clng),
-          teeTimes: generateTeeTimes(c.id||i, teeTime),
+          teeTimes: generateTeeTimes(c.id, teeTime),
           hoursUntil: hrs,
         };
       })
@@ -277,7 +275,7 @@ export default function GolfAlone() {
 
       setResults(courses);
     } catch(err) {
-      setError(err.message || "Something went wrong. Check your zip code and try again.");
+      setError(err.message || "Something went wrong. Please try again.");
       setResults([]);
     }
     setLoading(false);
@@ -287,8 +285,7 @@ export default function GolfAlone() {
     .filter(c=>c.bestScore>=filterMin)
     .sort((a,b)=>{
       if (sortBy==="score")    return b.bestScore-a.bestScore;
-      if (sortBy==="distance") return a.distance-b.distance;
-      if (sortBy==="price")    return a.price-b.price;
+      if (sortBy==="name")     return a.name.localeCompare(b.name);
       return 0;
     });
 
@@ -324,7 +321,6 @@ export default function GolfAlone() {
       `}</style>
 
       <div style={{position:"fixed",top:-150,left:-150,width:500,height:500,borderRadius:"50%",background:`radial-gradient(circle, ${C.accentGlow} 0%, transparent 70%)`,pointerEvents:"none",zIndex:0}}/>
-      <div style={{position:"fixed",bottom:-100,right:-100,width:420,height:420,borderRadius:"50%",background:"radial-gradient(circle, rgba(93,191,138,0.05) 0%, transparent 70%)",pointerEvents:"none",zIndex:0}}/>
       <div style={{position:"fixed",right:-55,top:170,width:210,height:210,borderRadius:"50%",background:`radial-gradient(circle at 35% 35%, ${C.surfaceHigh}, ${C.bg})`,border:`1px solid ${C.border}`,opacity:0.22,animation:"float 7s ease-in-out infinite",pointerEvents:"none",zIndex:0}}>
         {Array.from({length:20},(_,i)=>(
           <div key={i} style={{position:"absolute",width:11,height:11,borderRadius:"50%",background:"rgba(0,0,0,0.25)",left:`${12+(i%4)*22}%`,top:`${12+Math.floor(i/4)*22}%`}}/>
@@ -367,13 +363,6 @@ export default function GolfAlone() {
               <label style={labelStyle}>Tee Time</label>
               <input type="time" value={teeTime} onChange={e=>setTeeTime(e.target.value)} required style={inputStyle}/>
             </div>
-            <div>
-              <label style={labelStyle}>Radius: {radius} mi</label>
-              <input type="range" min={5} max={50} step={5} value={radius}
-                onChange={e=>setRadius(Number(e.target.value))}
-                style={{width:"100%",marginTop:12,accentColor:C.accent,cursor:"pointer"}}
-              />
-            </div>
           </div>
           <button type="submit" disabled={loading} style={{
             width:"100%",padding:"13px 24px",
@@ -412,12 +401,12 @@ export default function GolfAlone() {
               <div>
                 <span style={{color:C.accent,fontFamily:"'Bebas Neue',cursive",fontSize:22,letterSpacing:"0.08em"}}>{sorted.length}</span>
                 <span style={{color:C.textDim,fontFamily:"'DM Mono',monospace",fontSize:11,marginLeft:7}}>
-                  courses · {dayName} · ±1hr of {teeTime}
+                  courses near {cityName} · {dayName} · ±1hr of {teeTime}
                 </span>
               </div>
               <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
                 <span style={{color:C.textDim,fontSize:10,fontFamily:"monospace"}}>Sort:</span>
-                {["score","distance","price"].map(s=>(
+                {["score","name"].map(s=>(
                   <button key={s} onClick={()=>setSortBy(s)} style={{
                     background:sortBy===s?`${C.accent}20`:"transparent",
                     border:`1px solid ${sortBy===s?C.accentBorder:C.border}`,
@@ -460,7 +449,7 @@ export default function GolfAlone() {
               <div style={{textAlign:"center",padding:"48px 24px",background:C.surface,borderRadius:12,border:`1px solid ${C.border}`}}>
                 <div style={{fontSize:44,marginBottom:14}}>⛳</div>
                 <p style={{color:C.textDim,fontFamily:"monospace",margin:0,lineHeight:1.6}}>
-                  No courses found matching your criteria.<br/>Try expanding your radius or lowering the minimum score.
+                  No courses found near {cityName}.<br/>Try a different zip code or lower the minimum score.
                 </p>
               </div>
             ):sorted.map((course,i)=>(
